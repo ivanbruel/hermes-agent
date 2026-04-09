@@ -561,7 +561,12 @@ def load_gateway_config() -> GatewayConfig:
                 platform_cfg = yaml_cfg.get(plat.value)
                 if not isinstance(platform_cfg, dict):
                     continue
-                # Collect bridgeable keys from this platform section
+                # Bridge all keys from the top-level platform section into
+                # config.extra so adapters can read them.  This allows
+                # per-profile settings (bridge_port, bridge_chats,
+                # free_response_chats, require_mention, etc.) to be set
+                # under the top-level whatsapp:/telegram:/etc. key in
+                # config.yaml without needing gateway.platforms nesting.
                 bridged = {}
                 if "unauthorized_dm_behavior" in platform_cfg:
                     bridged["unauthorized_dm_behavior"] = _normalize_unauthorized_dm_behavior(
@@ -584,6 +589,8 @@ def load_gateway_config() -> GatewayConfig:
                     bridged["group_policy"] = platform_cfg["group_policy"]
                 if "group_allow_from" in platform_cfg:
                     bridged["group_allow_from"] = platform_cfg["group_allow_from"]
+                if "bridge_chats" in platform_cfg:
+                    bridged["bridge_chats"] = platform_cfg["bridge_chats"]
                 if plat == Platform.DISCORD and "channel_skill_bindings" in platform_cfg:
                     bridged["channel_skill_bindings"] = platform_cfg["channel_skill_bindings"]
                 if "channel_prompts" in platform_cfg:
