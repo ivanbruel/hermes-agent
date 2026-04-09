@@ -416,7 +416,8 @@ class GatewayConfig:
         group_sessions_per_user = data.get("group_sessions_per_user")
         thread_sessions_per_user = data.get("thread_sessions_per_user")
         unauthorized_dm_behavior = _normalize_unauthorized_dm_behavior(
-            data.get("unauthorized_dm_behavior"),
+            os.getenv("WHATSAPP_UNAUTHORIZED_DM_BEHAVIOR")
+            or data.get("unauthorized_dm_behavior"),
             "pair",
         )
 
