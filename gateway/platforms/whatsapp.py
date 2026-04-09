@@ -179,6 +179,12 @@ class WhatsAppAdapter(BasePlatformAdapter):
         self._allow_from = self._coerce_allow_list(config.extra.get("allow_from") or config.extra.get("allowFrom"))
         self._group_policy = str(config.extra.get("group_policy") or os.getenv("WHATSAPP_GROUP_POLICY", "open")).strip().lower()
         self._group_allow_from = self._coerce_allow_list(config.extra.get("group_allow_from") or config.extra.get("groupAllowFrom"))
+        # Multi-profile: only poll messages for these chat IDs from the bridge.
+        # Comma-separated WhatsApp JIDs, e.g. "15551234567@s.whatsapp.net,120363...@g.us"
+        self._bridge_chats: str = config.extra.get(
+            "bridge_chats",
+            os.getenv("WHATSAPP_BRIDGE_CHATS", ""),
+        )
         self._mention_patterns = self._compile_mention_patterns()
         self._message_queue: asyncio.Queue = asyncio.Queue()
         self._bridge_log_fh = None
@@ -914,6 +920,11 @@ class WhatsAppAdapter(BasePlatformAdapter):
         """Poll the bridge for incoming messages."""
         import aiohttp
 
+        # Build the poll URL once — append ?chats= filter for multi-profile setups
+        messages_url = f"http://127.0.0.1:{self._bridge_port}/messages"
+        if self._bridge_chats:
+            messages_url += f"?chats={self._bridge_chats}"
+
         while self._running:
             if not self._http_session:
                 break
@@ -923,7 +934,7 @@ class WhatsAppAdapter(BasePlatformAdapter):
                 break
             try:
                 async with self._http_session.get(
-                    f"http://127.0.0.1:{self._bridge_port}/messages",
+                    messages_url,
                     timeout=aiohttp.ClientTimeout(total=30)
                 ) as resp:
                     if resp.status == 200:

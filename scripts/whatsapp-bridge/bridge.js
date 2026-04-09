@@ -49,6 +49,14 @@ const AUDIO_CACHE_DIR = path.join(process.env.HOME || '~', '.hermes', 'audio_cac
 const PAIR_ONLY = args.includes('--pair-only');
 const WHATSAPP_MODE = getArg('mode', process.env.WHATSAPP_MODE || 'self-chat'); // "bot" or "self-chat"
 const ALLOWED_USERS = parseAllowedUsers(process.env.WHATSAPP_ALLOWED_USERS || '');
+// Group allowlist: comma-separated group JIDs (e.g. "120363...@g.us,16505...-1542...@g.us").
+// Empty or "*" means all groups are allowed.  When set, only messages from
+// listed groups are accepted — DM allowlisting is handled separately above.
+const ALLOWED_GROUPS = (() => {
+  const raw = (process.env.WHATSAPP_ALLOWED_GROUPS || '').trim();
+  if (!raw || raw === '*') return null;  // null = allow all groups
+  return new Set(raw.split(',').map(g => g.trim()).filter(Boolean));
+})();
 const DEFAULT_REPLY_PREFIX = '⚕ *Hermes Agent*\n────────────\n';
 const REPLY_PREFIX = process.env.WHATSAPP_REPLY_PREFIX === undefined
   ? DEFAULT_REPLY_PREFIX
@@ -107,10 +115,23 @@ function buildLidMap() {
 }
 let lidToPhone = buildLidMap();
 
+// Resolve a LID-based chat ID to its phone-number equivalent.
+// e.g. "123456789@lid" → "15551234567@s.whatsapp.net"
+// Returns the original chatId if no mapping exists (groups, already phone-based).
+function normalizeChatId(chatId) {
+  if (!chatId || !chatId.endsWith('@lid')) return chatId;
+  const bare = chatId.replace(/@.*/, '');
+  const phone = lidToPhone[bare] || lidToPhone[chatId];
+  return phone ? `${phone}@s.whatsapp.net` : chatId;
+}
+
 const logger = pino({ level: 'warn' });
 
-// Message queue for polling
-const messageQueue = [];
+// Per-chat message queues for multi-profile polling.
+// When multiple Hermes profiles share a single bridge, each profile polls
+// only its assigned chats via ?chats=id1,id2.  Without the query param
+// all queues are drained (backwards-compatible single-profile behaviour).
+const messageQueues = {};  // { chatId: [events...] }
 const MAX_QUEUE_SIZE = 100;
 
 // Track recently sent message IDs to prevent echo-back loops with media
@@ -192,7 +213,7 @@ async function startSocket() {
     for (const msg of messages) {
       if (!msg.message) continue;
 
-      const chatId = msg.key.remoteJid;
+      const chatId = normalizeChatId(msg.key.remoteJid);
       if (WHATSAPP_DEBUG) {
         try {
           console.log(JSON.stringify({
@@ -203,7 +224,7 @@ async function startSocket() {
           }));
         } catch {}
       }
-      const senderId = msg.key.participant || chatId;
+      const senderId = normalizeChatId(msg.key.participant || chatId);
       const isGroup = chatId.endsWith('@g.us');
       const senderNumber = senderId.replace(/@.*/, '');
 
@@ -227,17 +248,28 @@ async function startSocket() {
         if (!isSelfChat) continue;
       }
 
-      // Check allowlist for messages from others (resolve LID ↔ phone aliases)
-      if (!msg.key.fromMe && !matchesAllowedUser(senderId, ALLOWED_USERS, SESSION_DIR)) {
-        try {
-          console.log(JSON.stringify({
-            event: 'ignored',
-            reason: 'allowlist_mismatch',
-            chatId,
-            senderId,
-          }));
-        } catch {}
-        continue;
+      // Access control: separate DM and group allowlists.
+      // - DMs: check sender against WHATSAPP_ALLOWED_USERS
+      // - Groups: check group JID against WHATSAPP_ALLOWED_GROUPS (all participants allowed)
+      if (!msg.key.fromMe) {
+        if (isGroup) {
+          if (ALLOWED_GROUPS && !ALLOWED_GROUPS.has(chatId)) {
+            try { console.log(JSON.stringify({ event: 'ignored', reason: 'group_not_allowed', chatId })); } catch {}
+            continue;
+          }
+        } else {
+          if (!matchesAllowedUser(senderId, ALLOWED_USERS, SESSION_DIR)) {
+            try {
+              console.log(JSON.stringify({
+                event: 'ignored',
+                reason: 'allowlist_mismatch',
+                chatId,
+                senderId,
+              }));
+            } catch {}
+            continue;
+          }
+        }
       }
 
       const messageContent = getMessageContent(msg);
@@ -360,9 +392,10 @@ async function startSocket() {
         timestamp: msg.messageTimestamp,
       };
 
-      messageQueue.push(event);
-      if (messageQueue.length > MAX_QUEUE_SIZE) {
-        messageQueue.shift();
+      if (!messageQueues[chatId]) messageQueues[chatId] = [];
+      messageQueues[chatId].push(event);
+      if (messageQueues[chatId].length > MAX_QUEUE_SIZE) {
+        messageQueues[chatId].shift();
       }
     }
   });
@@ -373,39 +406,41 @@ const app = express();
 app.use(express.json());
 
 // Host-header validation — defends against DNS rebinding.
-// The bridge binds loopback-only (127.0.0.1) but a victim browser on
-// the same machine could be tricked into fetching from an attacker
-// hostname that TTL-flips to 127.0.0.1. Reject any request whose Host
-// header doesn't resolve to a loopback alias.
-// See GHSA-ppp5-vxwm-4cf7.
 const _ACCEPTED_HOST_VALUES = new Set([
   'localhost',
   '127.0.0.1',
   '[::1]',
   '::1',
 ]);
-
 app.use((req, res, next) => {
   const raw = (req.headers.host || '').trim();
-  if (!raw) {
-    return res.status(400).json({ error: 'Missing Host header' });
-  }
-  // Strip port suffix: "localhost:3000" → "localhost"
+  if (!raw) return res.status(400).json({ error: 'Missing Host header' });
   const hostOnly = (raw.includes(':')
     ? raw.substring(0, raw.lastIndexOf(':'))
     : raw
   ).replace(/^\[|\]$/g, '').toLowerCase();
-  if (!_ACCEPTED_HOST_VALUES.has(hostOnly)) {
-    return res.status(400).json({
-      error: 'Invalid Host header. Bridge accepts loopback hosts only.',
-    });
-  }
+  if (!_ACCEPTED_HOST_VALUES.has(hostOnly))
+    return res.status(400).json({ error: 'Invalid Host header. Bridge accepts loopback hosts only.' });
   next();
 });
 
-// Poll for new messages (long-poll style)
+// Poll for new messages (long-poll style).
+// Optional query param ?chats=id1,id2 returns only messages for those chat IDs
+// (used by multi-profile setups).  Without the param, all queues are drained.
 app.get('/messages', (req, res) => {
-  const msgs = messageQueue.splice(0, messageQueue.length);
+  const chats = req.query.chats ? req.query.chats.split(',') : null;
+  const msgs = [];
+  if (chats) {
+    for (const id of chats) {
+      if (messageQueues[id]) {
+        msgs.push(...messageQueues[id].splice(0));
+      }
+    }
+  } else {
+    for (const q of Object.values(messageQueues)) {
+      msgs.push(...q.splice(0));
+    }
+  }
   res.json(msgs);
 });
 
@@ -582,7 +617,7 @@ app.get('/chat/:id', async (req, res) => {
 app.get('/health', (req, res) => {
   res.json({
     status: connectionState,
-    queueLength: messageQueue.length,
+    queueLength: Object.values(messageQueues).reduce((n, q) => n + q.length, 0),
     uptime: process.uptime(),
   });
 });
