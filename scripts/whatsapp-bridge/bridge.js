@@ -66,6 +66,9 @@ const REPLY_PREFIX = process.env.WHATSAPP_REPLY_PREFIX === undefined
 // WhatsApp uses: *bold*, _italic_, *_bold+italic_*, ~strikethrough~, `code`
 function markdownToWhatsApp(text) {
   let result = text;
+  // Sub-list bullets: indented * or - → • (before bold/italic conversion)
+  result = result.replace(/^(\s+)\*\s+/gm, '$1• ');
+  result = result.replace(/^(\s+)-\s+/gm, '$1• ');
   // Headers → bold
   result = result.replace(/^#{1,6}\s+(.+)$/gm, '*$1*');
   // Bold+italic first (most specific): ***text*** → *_text_*
