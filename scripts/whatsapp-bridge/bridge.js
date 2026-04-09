@@ -205,10 +205,17 @@ async function startSocket() {
     // than 'notify'. Accept both and filter agent echo-backs below.
     if (type !== 'notify' && type !== 'append') return;
 
-    const botIds = Array.from(new Set([
+    // Build bot IDs with AND without device suffix so reply detection
+    // matches both formats.  WhatsApp uses "number:device@domain" internally
+    // but quotedParticipant in replies often omits the device part.
+    const rawBotIds = [
       normalizeWhatsAppId(sock.user?.id),
       normalizeWhatsAppId(sock.user?.lid),
-    ].filter(Boolean)));
+    ].filter(Boolean);
+    const botIds = Array.from(new Set([
+      ...rawBotIds,
+      ...rawBotIds.map(id => id.replace(/@\d+@/, '@')),  // strip device suffix
+    ]));
 
     for (const msg of messages) {
       if (!msg.message) continue;
