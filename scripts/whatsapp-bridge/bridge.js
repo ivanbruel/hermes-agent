@@ -62,12 +62,32 @@ const REPLY_PREFIX = process.env.WHATSAPP_REPLY_PREFIX === undefined
   ? DEFAULT_REPLY_PREFIX
   : process.env.WHATSAPP_REPLY_PREFIX.replace(/\\n/g, '\n');
 
+// Convert standard markdown to WhatsApp-compatible formatting.
+function markdownToWhatsApp(text) {
+  let result = text;
+  // Headers → bold (### Header → *Header*)
+  result = result.replace(/^#{1,6}\s+(.+)$/gm, '*$1*');
+  // Bold: **text** or __text__ → *text*
+  result = result.replace(/\*\*(.+?)\*\*/g, '*$1*');
+  result = result.replace(/__(.+?)__/g, '*$1*');
+  // Strikethrough: ~~text~~ → ~text~
+  result = result.replace(/~~(.+?)~~/g, '~$1~');
+  // Links: [text](url) → text (url)
+  result = result.replace(/\[([^\]]+)\]\(([^)]+)\)/g, '$1 ($2)');
+  // Images: ![alt](url) → alt (url)
+  result = result.replace(/!\[([^\]]*)\]\(([^)]+)\)/g, '$1 ($2)');
+  // Horizontal rules: --- or *** or ___ → ────────────
+  result = result.replace(/^[\-\*_]{3,}\s*$/gm, '────────────');
+  return result;
+}
+
 function formatOutgoingMessage(message) {
+  let text = markdownToWhatsApp(message);
   // In bot mode, messages come from a different number so the prefix is
   // redundant — the sender identity is already clear.  Only prepend in
   // self-chat mode where bot and user share the same number.
-  if (WHATSAPP_MODE !== 'self-chat') return message;
-  return REPLY_PREFIX ? `${REPLY_PREFIX}${message}` : message;
+  if (WHATSAPP_MODE !== 'self-chat') return text;
+  return REPLY_PREFIX ? `${REPLY_PREFIX}${text}` : text;
 }
 
 function normalizeWhatsAppId(value) {
