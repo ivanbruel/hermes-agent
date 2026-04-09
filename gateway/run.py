@@ -3243,6 +3243,10 @@ class GatewayRunner:
             # flow with a None user_id.
             logger.debug("Ignoring message with no user_id from %s", source.platform.value)
             return None
+        elif source.chat_type in ("group", "channel", "thread"):
+            # Group messages skip user auth — group-level filtering is handled
+            # by the bridge (WHATSAPP_ALLOWED_GROUPS, etc.).
+            pass
         elif not self._is_user_authorized(source):
             logger.warning("Unauthorized user: %s (%s) on %s", source.user_id, source.user_name, source.platform.value)
             # In DMs: offer pairing code. In groups: silently ignore.
