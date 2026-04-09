@@ -214,19 +214,23 @@ async function startSocket() {
       if (!msg.message) continue;
 
       const chatId = normalizeChatId(msg.key.remoteJid);
-      if (WHATSAPP_DEBUG) {
-        try {
-          console.log(JSON.stringify({
-            event: 'upsert', type,
-            fromMe: !!msg.key.fromMe, chatId,
-            senderId: msg.key.participant || chatId,
-            messageKeys: Object.keys(msg.message || {}),
-          }));
-        } catch {}
-      }
       const senderId = normalizeChatId(msg.key.participant || chatId);
       const isGroup = chatId.endsWith('@g.us');
       const senderNumber = senderId.replace(/@.*/, '');
+
+      if (WHATSAPP_DEBUG) {
+        try {
+          const mc = getMessageContent(msg);
+          const ci = getContextInfo(mc);
+          console.log(JSON.stringify({
+            event: 'upsert', type,
+            fromMe: !!msg.key.fromMe, chatId, senderId, isGroup,
+            messageKeys: Object.keys(msg.message || {}),
+            quotedParticipant: ci?.participant || ci?.remoteJid || '',
+            botIds,
+          }));
+        } catch {}
+      }
 
       // Handle fromMe messages based on mode
       if (msg.key.fromMe) {
