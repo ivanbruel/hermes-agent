@@ -66,23 +66,21 @@ const REPLY_PREFIX = process.env.WHATSAPP_REPLY_PREFIX === undefined
 // WhatsApp uses: *bold*, _italic_, *_bold+italic_*, ~strikethrough~, `code`
 function markdownToWhatsApp(text) {
   let result = text;
-  // Headers → bold (### Header → *Header*)
+  // Headers → bold
   result = result.replace(/^#{1,6}\s+(.+)$/gm, '*$1*');
-  // Bold+italic: ***text*** → *_text_*
+  // Bold+italic first (most specific): ***text*** → *_text_*
   result = result.replace(/\*\*\*(.+?)\*\*\*/g, '*_$1_*');
-  // Bold: **text** or __text__ → placeholder (to avoid collision with italic *)
-  result = result.replace(/\*\*(.+?)\*\*/g, '\x01$1\x01');
-  result = result.replace(/__(.+?)__/g, '\x01$1\x01');
-  // Italic: *text* → _text_ (remaining single asterisks are italic in markdown)
-  result = result.replace(/\*(.+?)\*/g, '_$1_');
-  // Restore bold: placeholder → *text*
-  result = result.replace(/\x01(.+?)\x01/g, '*$1*');
+  // Italic: single *text* (not adjacent to other *) → _text_
+  result = result.replace(/(?<!\*)\*(?!\*)(.+?)(?<!\*)\*(?!\*)/g, '_$1_');
+  // Bold: **text** or __text__ → *text*
+  result = result.replace(/\*\*(.+?)\*\*/g, '*$1*');
+  result = result.replace(/__(.+?)__/g, '*$1*');
   // Strikethrough: ~~text~~ → ~text~
   result = result.replace(/~~(.+?)~~/g, '~$1~');
-  // Links: [text](url) → text (url)
-  result = result.replace(/\[([^\]]+)\]\(([^)]+)\)/g, '$1 ($2)');
-  // Images: ![alt](url) → alt (url)
-  result = result.replace(/!\[([^\]]*)\]\(([^)]+)\)/g, '$1 ($2)');
+  // Links: [text](url) → url
+  result = result.replace(/\[([^\]]+)\]\(([^)]+)\)/g, '$2');
+  // Images: ![alt](url) → url
+  result = result.replace(/!\[([^\]]*)\]\(([^)]+)\)/g, '$2');
   // Horizontal rules: --- or *** or ___ → ────────────
   result = result.replace(/^[\-\*_]{3,}\s*$/gm, '────────────');
   return result;
