@@ -74,8 +74,8 @@ function markdownToWhatsApp(text) {
   // Sub-list bullets: indented * or - → •
   result = result.replace(/^(\s*)\*\s+/gm, (_, indent) => indent ? `${indent}• ` : '- ');
   result = result.replace(/^(\s+)-\s+/gm, '$1• ');
-  // Asterisk formatting in one pass: ***, **, * handled by backreference
-  // so converted bold *text* can't be re-caught as italic
+  // Asterisk formatting in one pass via backreference:
+  // ***text*** → *_text_* | **text** → *text* | *text* → _text_
   result = result.replace(/(\*{1,3})(.+?)\1/g, (_, stars, content) => {
     if (stars === '***') return `*_${content}_*`;
     if (stars === '**') return `*${content}*`;
