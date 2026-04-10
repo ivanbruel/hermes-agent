@@ -65,7 +65,11 @@ const REPLY_PREFIX = process.env.WHATSAPP_REPLY_PREFIX === undefined
 // Convert standard markdown to WhatsApp-compatible formatting.
 // WhatsApp uses: *bold*, _italic_, *_bold+italic_*, ~strikethrough~, `code`
 function markdownToWhatsApp(text) {
-  let result = text;
+  // Protect code blocks and inline code from conversion
+  const codeBlocks = [];
+  let result = text.replace(/```[\s\S]*?```/g, (m) => { codeBlocks.push(m); return `\x02${codeBlocks.length - 1}\x02`; });
+  result = result.replace(/`[^`]+`/g, (m) => { codeBlocks.push(m); return `\x02${codeBlocks.length - 1}\x02`; });
+
   // List bullets: * item → - item (before formatting so * doesn't collide)
   // Sub-list bullets: indented * or - → •
   result = result.replace(/^(\s*)\*\s+/gm, (_, indent) => indent ? `${indent}• ` : '- ');
@@ -89,6 +93,9 @@ function markdownToWhatsApp(text) {
   result = result.replace(/\[([^\]]+)\]\(([^)]+)\)/g, '$2');
   // Horizontal rules: --- or *** or ___ → ────────────
   result = result.replace(/^[\-\*_]{3,}\s*$/gm, '────────────');
+
+  // Restore code blocks
+  result = result.replace(/\x02(\d+)\x02/g, (_, i) => codeBlocks[parseInt(i)]);
   return result;
 }
 
