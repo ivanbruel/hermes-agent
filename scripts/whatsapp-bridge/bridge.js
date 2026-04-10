@@ -146,7 +146,13 @@ function buildLidMap() {
       if (!m) continue;
       const phone = m[1];
       const lid = JSON.parse(readFileSync(path.join(SESSION_DIR, f), 'utf8'));
-      if (lid) map[String(lid)] = phone;
+      if (lid) {
+        const lidStr = String(lid);
+        map[lidStr] = phone;
+        // Also index by bare LID without device suffix (e.g. "12345:5" → "12345")
+        const bareLid = lidStr.replace(/:.*/, '');
+        if (bareLid !== lidStr) map[bareLid] = phone;
+      }
     }
   } catch {}
   return map;
