@@ -83,10 +83,10 @@ function markdownToWhatsApp(text) {
   result = result.replace(/^#{1,6}\s+(.+)$/gm, '*$1*');
   // Strikethrough: ~~text~~ → ~text~
   result = result.replace(/~~(.+?)~~/g, '~$1~');
+  // Images before links (![alt](url) partially matches [alt](url))
+  result = result.replace(/!\[([^\]]*)\]\(([^)]+)\)/g, '$2');
   // Links: [text](url) → url
   result = result.replace(/\[([^\]]+)\]\(([^)]+)\)/g, '$2');
-  // Images: ![alt](url) → url
-  result = result.replace(/!\[([^\]]*)\]\(([^)]+)\)/g, '$2');
   // Horizontal rules: --- or *** or ___ → ────────────
   result = result.replace(/^[\-\*_]{3,}\s*$/gm, '────────────');
   return result;
