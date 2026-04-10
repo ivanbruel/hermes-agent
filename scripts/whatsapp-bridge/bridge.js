@@ -69,15 +69,17 @@ function markdownToWhatsApp(text) {
   // Sub-list bullets: indented * or - → • (before bold/italic conversion)
   result = result.replace(/^(\s+)\*\s+/gm, '$1• ');
   result = result.replace(/^(\s+)-\s+/gm, '$1• ');
-  // Headers → bold
-  result = result.replace(/^#{1,6}\s+(.+)$/gm, '*$1*');
-  // Bold+italic first (most specific): ***text*** → *_text_*
-  result = result.replace(/\*\*\*(.+?)\*\*\*/g, '*_$1_*');
-  // Italic: single *text* (not adjacent to other *) → _text_
-  result = result.replace(/(?<!\*)\*(?!\*)(.+?)(?<!\*)\*(?!\*)/g, '_$1_');
-  // Bold: **text** or __text__ → *text*
-  result = result.replace(/\*\*(.+?)\*\*/g, '*$1*');
+  // Asterisk formatting in one pass: ***, **, * handled by backreference
+  // so converted bold *text* can't be re-caught as italic
+  result = result.replace(/(\*{1,3})(.+?)\1/g, (_, stars, content) => {
+    if (stars === '***') return `*_${content}_*`;
+    if (stars === '**') return `*${content}*`;
+    return `_${content}_`;
+  });
+  // __text__ → *text* (bold)
   result = result.replace(/__(.+?)__/g, '*$1*');
+  // Headers → bold (after * processing so they don't interfere)
+  result = result.replace(/^#{1,6}\s+(.+)$/gm, '*$1*');
   // Strikethrough: ~~text~~ → ~text~
   result = result.replace(/~~(.+?)~~/g, '~$1~');
   // Links: [text](url) → url
