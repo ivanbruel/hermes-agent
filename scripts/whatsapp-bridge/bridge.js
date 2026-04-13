@@ -511,7 +511,14 @@ app.post('/send', async (req, res) => {
   }
 
   try {
-    const sent = await sock.sendMessage(chatId, { text: formatOutgoingMessage(message) });
+    // Auto-detect @phonenumber mentions in outgoing text
+    const formattedText = formatOutgoingMessage(message);
+    const mentionMatches = [...formattedText.matchAll(/@(\d{7,15})/g)];
+    const mentions = mentionMatches.map(m => `${m[1]}@s.whatsapp.net`);
+    const msgPayload = { text: formattedText };
+    if (mentions.length > 0) msgPayload.mentions = mentions;
+
+    const sent = await sock.sendMessage(chatId, msgPayload);
 
     // Track sent message ID to prevent echo-back loops
     if (sent?.key?.id) {
@@ -640,6 +647,51 @@ app.post('/typing', async (req, res) => {
     res.json({ success: true });
   } catch (err) {
     res.json({ success: false });
+  }
+});
+
+// React to a message
+app.post('/react', async (req, res) => {
+  if (!sock || connectionState !== 'connected') {
+    return res.status(503).json({ error: 'Not connected' });
+  }
+
+  const { chatId, messageId, emoji } = req.body;
+  if (!chatId || !messageId) {
+    return res.status(400).json({ error: 'chatId and messageId are required' });
+  }
+
+  try {
+    await sock.sendMessage(chatId, {
+      react: { text: emoji || '', key: { id: messageId, remoteJid: chatId } }
+    });
+    res.json({ success: true });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// Group participants
+app.get('/group-participants/:chatId', async (req, res) => {
+  const chatId = req.params.chatId;
+  if (!chatId.endsWith('@g.us')) {
+    return res.status(400).json({ error: 'Not a group chat' });
+  }
+  if (!sock) {
+    return res.status(503).json({ error: 'Not connected' });
+  }
+
+  try {
+    const metadata = await sock.groupMetadata(chatId);
+    const participants = metadata.participants.map(p => ({
+      id: p.id,
+      phone: p.id.replace(/@.*/, '').replace(/:.*/, ''),
+      name: p.notify || p.id.replace(/@.*/, ''),
+      admin: p.admin || null,
+    }));
+    res.json({ name: metadata.subject, participants });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
   }
 });
 

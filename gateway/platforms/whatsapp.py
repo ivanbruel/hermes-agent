@@ -191,6 +191,15 @@ class WhatsAppAdapter(BasePlatformAdapter):
         self._bridge_log: Optional[Path] = None
         self._poll_task: Optional[asyncio.Task] = None
         self._http_session: Optional["aiohttp.ClientSession"] = None
+        self._session_lock_identity: Optional[str] = None
+        # Passive context: in-memory ring buffer of untagged group messages per chat
+        from collections import deque
+        self._context_buffer_size: int = int(config.extra.get("context_buffer_size", 50))
+        self._context_buffers: Dict[str, deque] = {}
+        # Group participant cache: {chatId: [{id, phone, name, admin}]}
+        self._group_participants: Dict[str, list] = {}
+        # JSONL log directory
+        self._log_dir: Optional[Path] = None
 
     def _whatsapp_require_mention(self) -> bool:
         configured = self.config.extra.get("require_mention")
@@ -889,7 +898,128 @@ class WhatsAppAdapter(BasePlatformAdapter):
             )
         except Exception:
             pass  # Ignore typing indicator failures
-    
+
+    # --- Reactions ---
+
+    def _reactions_enabled(self) -> bool:
+        configured = self.config.extra.get("reactions")
+        if configured is not None:
+            if isinstance(configured, str):
+                return configured.lower() in ("true", "1", "yes", "on")
+            return bool(configured)
+        return True  # default: enabled
+
+    async def send_reaction(self, chat_id: str, message_id: str, emoji: str) -> None:
+        """Send an emoji reaction to a message via the bridge."""
+        if not self._running or not self._http_session:
+            return
+        try:
+            import aiohttp
+            await self._http_session.post(
+                f"http://127.0.0.1:{self._bridge_port}/react",
+                json={"chatId": chat_id, "messageId": message_id, "emoji": emoji},
+                timeout=aiohttp.ClientTimeout(total=5)
+            )
+        except Exception:
+            pass  # Ignore reaction failures
+
+    async def on_processing_start(self, event: MessageEvent) -> None:
+        """Add 👀 reaction when message processing begins."""
+        if not self._reactions_enabled():
+            return
+        chat_id = getattr(event.source, "chat_id", None)
+        message_id = getattr(event, "message_id", None)
+        if chat_id and message_id:
+            await self.send_reaction(chat_id, message_id, "\U0001f440")
+
+    async def on_processing_complete(self, event: MessageEvent, success: bool) -> None:
+        """Replace 👀 with ✅ or ❌ when processing completes."""
+        if not self._reactions_enabled():
+            return
+        chat_id = getattr(event.source, "chat_id", None)
+        message_id = getattr(event, "message_id", None)
+        if chat_id and message_id:
+            await self.send_reaction(chat_id, message_id, "\u2705" if success else "\u274c")
+
+    # --- JSONL message logging ---
+
+    def _ensure_log_dir(self) -> Path:
+        """Get or create the JSONL log directory."""
+        if self._log_dir is None:
+            self._log_dir = get_hermes_home() / "logs" / "whatsapp"
+            self._log_dir.mkdir(parents=True, exist_ok=True)
+        return self._log_dir
+
+    def _log_message_jsonl(self, msg_data: Dict[str, Any]) -> None:
+        """Append a message to the per-chat JSONL log file."""
+        try:
+            import json as _json
+            log_dir = self._ensure_log_dir()
+            chat_id = msg_data.get("chatId", "unknown")
+            safe_chat_id = chat_id.replace("/", "_").replace(":", "_")
+            log_path = log_dir / f"{safe_chat_id}.jsonl"
+            entry = {
+                "ts": msg_data.get("timestamp") or int(__import__("time").time()),
+                "sender": msg_data.get("senderName", ""),
+                "senderId": msg_data.get("senderId", ""),
+                "body": msg_data.get("body", ""),
+                "chatId": chat_id,
+                "isGroup": msg_data.get("isGroup", False),
+            }
+            if msg_data.get("hasMedia"):
+                entry["mediaType"] = msg_data.get("mediaType", "")
+                entry["mediaUrls"] = msg_data.get("mediaUrls", [])
+            with open(log_path, "a", encoding="utf-8") as f:
+                f.write(_json.dumps(entry, ensure_ascii=False) + "\n")
+        except Exception as e:
+            logger.debug("[%s] Failed to write JSONL log: %s", self.name, e)
+
+    # --- Context buffer for untagged messages ---
+
+    def _buffer_context_message(self, msg_data: Dict[str, Any]) -> None:
+        """Store an untagged message in the per-chat ring buffer."""
+        from collections import deque
+        chat_id = msg_data.get("chatId", "")
+        if not chat_id:
+            return
+        if chat_id not in self._context_buffers:
+            self._context_buffers[chat_id] = deque(maxlen=self._context_buffer_size)
+        self._context_buffers[chat_id].append({
+            "sender": msg_data.get("senderName", ""),
+            "body": msg_data.get("body", ""),
+            "ts": msg_data.get("timestamp") or int(__import__("time").time()),
+        })
+
+    def _drain_context_buffer(self, chat_id: str) -> list:
+        """Return and clear buffered context messages for a chat."""
+        if chat_id not in self._context_buffers:
+            return []
+        msgs = list(self._context_buffers[chat_id])
+        self._context_buffers[chat_id].clear()
+        return msgs
+
+    # --- Group participants ---
+
+    async def _fetch_group_participants(self, chat_id: str) -> list:
+        """Fetch and cache group participants from the bridge."""
+        if chat_id in self._group_participants:
+            return self._group_participants[chat_id]
+        if not self._running or not self._http_session:
+            return []
+        try:
+            import aiohttp
+            async with self._http_session.get(
+                f"http://127.0.0.1:{self._bridge_port}/group-participants/{chat_id}",
+                timeout=aiohttp.ClientTimeout(total=10)
+            ) as resp:
+                if resp.status == 200:
+                    data = await resp.json()
+                    self._group_participants[chat_id] = data.get("participants", [])
+                    return self._group_participants[chat_id]
+        except Exception as e:
+            logger.debug("[%s] Failed to fetch group participants: %s", self.name, e)
+        return []
+
     async def get_chat_info(self, chat_id: str) -> Dict[str, Any]:
         """Get information about a WhatsApp chat."""
         if not self._running or not self._http_session:
@@ -940,6 +1070,8 @@ class WhatsAppAdapter(BasePlatformAdapter):
                     if resp.status == 200:
                         messages = await resp.json()
                         for msg_data in messages:
+                            # Log ALL messages to JSONL (before filtering)
+                            self._log_message_jsonl(msg_data)
                             event = await self._build_message_event(msg_data)
                             if event:
                                 await self.handle_message(event)
@@ -959,7 +1091,19 @@ class WhatsAppAdapter(BasePlatformAdapter):
         """Build a MessageEvent from bridge message data, downloading images to cache."""
         try:
             if not self._should_process_message(data):
+                # Buffer untagged group messages for context
+                if data.get("isGroup"):
+                    self._buffer_context_message(data)
                 return None
+
+            # For tagged messages in groups, drain context buffer and
+            # fetch participants if not cached yet
+            context_messages = []
+            participants = []
+            chat_id = data.get("chatId", "")
+            if data.get("isGroup"):
+                context_messages = self._drain_context_buffer(chat_id)
+                participants = await self._fetch_group_participants(chat_id)
 
             # Determine message type
             msg_type = MessageType.TEXT
@@ -1071,7 +1215,7 @@ class WhatsAppAdapter(BasePlatformAdapter):
                         except Exception as e:
                             print(f"[{self.name}] Failed to read document text: {e}", flush=True)
 
-            return MessageEvent(
+            event = MessageEvent(
                 text=body,
                 message_type=msg_type,
                 source=source,
@@ -1080,6 +1224,12 @@ class WhatsAppAdapter(BasePlatformAdapter):
                 media_urls=cached_urls,
                 media_types=media_types,
             )
+            # Attach context and participants for group messages
+            if context_messages:
+                event.context_messages = context_messages
+            if participants:
+                event.group_participants = participants
+            return event
         except Exception as e:
             print(f"[{self.name}] Error building event: {e}")
             return None

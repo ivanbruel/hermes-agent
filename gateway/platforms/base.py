@@ -829,6 +829,11 @@ class MessageEvent:
     # completion notifications) that must bypass user authorization checks.
     internal: bool = False
 
+    # Passive context: recent untagged group messages before this tagged message
+    context_messages: Optional[list] = None
+    # Group participant list: [{id, phone, name, admin}]
+    group_participants: Optional[list] = None
+
     # Timestamps
     timestamp: datetime = field(default_factory=datetime.now)
     

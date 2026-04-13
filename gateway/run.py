@@ -4155,7 +4155,41 @@ class GatewayRunner:
 
         # Build the context prompt to inject
         context_prompt = build_session_context_prompt(context, redact_pii=_redact_pii)
-        
+
+        # Inject group participants into context (for natural @mentions)
+        if getattr(event, 'group_participants', None):
+            participant_lines = []
+            for p in event.group_participants:
+                name = p.get("name", "")
+                phone = p.get("phone", "")
+                if name and phone:
+                    participant_lines.append(f"  {name}: +{phone}")
+            if participant_lines:
+                context_prompt = (
+                    "[Group participants:\n"
+                    + "\n".join(participant_lines)
+                    + "\nTo mention someone, use @<phone_number> e.g. @" + event.group_participants[0].get("phone", "") + "]\n\n"
+                    + context_prompt
+                )
+
+        # Inject recent untagged group messages as context
+        if getattr(event, 'context_messages', None):
+            from datetime import datetime as _dt
+            context_lines = []
+            for msg in event.context_messages:
+                ts = msg.get("ts", 0)
+                time_str = _dt.fromtimestamp(ts).strftime("%H:%M") if ts else ""
+                sender = msg.get("sender", "?")
+                body = msg.get("body", "")
+                context_lines.append(f"  [{time_str}] {sender}: {body}")
+            if context_lines:
+                context_prompt = (
+                    "[Recent group conversation before you were tagged:\n"
+                    + "\n".join(context_lines)
+                    + "\n]\n\n"
+                    + context_prompt
+                )
+
         # If the previous session expired and was auto-reset, prepend a notice
         # so the agent knows this is a fresh conversation (not an intentional /reset).
         if getattr(session_entry, 'was_auto_reset', False):
