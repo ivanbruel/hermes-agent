@@ -1090,20 +1090,17 @@ class WhatsAppAdapter(BasePlatformAdapter):
     async def _build_message_event(self, data: Dict[str, Any]) -> Optional[MessageEvent]:
         """Build a MessageEvent from bridge message data, downloading images to cache."""
         try:
-            # Buffer ALL group messages for context (before filtering)
-            if data.get("isGroup"):
-                self._buffer_context_message(data)
+            # Buffer ALL messages for context (before filtering)
+            self._buffer_context_message(data)
 
             if not self._should_process_message(data):
                 return None
 
-            # For tagged messages in groups, drain context buffer and
-            # fetch participants if not cached yet
-            context_messages = []
-            participants = []
+            # Drain context buffer and fetch group participants if applicable
             chat_id = data.get("chatId", "")
+            context_messages = self._drain_context_buffer(chat_id)
+            participants = []
             if data.get("isGroup"):
-                context_messages = self._drain_context_buffer(chat_id)
                 participants = await self._fetch_group_participants(chat_id)
 
             # Determine message type
