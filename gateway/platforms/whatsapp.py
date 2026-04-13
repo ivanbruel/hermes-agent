@@ -200,6 +200,30 @@ class WhatsAppAdapter(BasePlatformAdapter):
         self._group_participants: Dict[str, list] = {}
         # JSONL log directory
         self._log_dir: Optional[Path] = None
+        # Profile label for logging (derived from bridge_chats or platform name)
+        self._profile_label: str = self._derive_profile_label()
+
+    def _derive_profile_label(self) -> str:
+        """Derive a short profile label from bridge_chats config."""
+        chats = self._bridge_chats
+        if not chats:
+            return "whatsapp"
+        # Use first chat ID, strip domain
+        first = chats.split(",")[0].strip()
+        if first.endswith("@g.us"):
+            return first.split("@")[0][:12]
+        return first.split("@")[0]
+
+    @staticmethod
+    def _truncate(text: str, maxlen: int = 50) -> str:
+        text = (text or "").replace("\n", " ")
+        return text[:maxlen] + "..." if len(text) > maxlen else text
+
+    def _wa_log(self, emoji: str, msg: str) -> None:
+        """Print a structured WhatsApp log line."""
+        from datetime import datetime as _dt
+        ts = _dt.now().strftime("%H:%M:%S")
+        print(f"[{ts}] [{self._profile_label}] {emoji} {msg}", flush=True)
 
     def _whatsapp_require_mention(self) -> bool:
         configured = self.config.extra.get("require_mention")
@@ -730,6 +754,7 @@ class WhatsAppAdapter(BasePlatformAdapter):
                 if len(chunks) > 1:
                     await asyncio.sleep(0.3)
 
+            self._wa_log("\U0001f4e4", f'Claudio: "{self._truncate(content)}"')
             return SendResult(
                 success=True,
                 message_id=last_message_id,
@@ -931,6 +956,7 @@ class WhatsAppAdapter(BasePlatformAdapter):
         message_id = getattr(event, "message_id", None)
         if chat_id and message_id:
             await self.send_reaction(chat_id, message_id, "\U0001f440")
+            self._wa_log("\U0001f440", "Reacted")
 
     async def on_processing_complete(self, event: MessageEvent, outcome) -> None:
         """Replace 👀 with ✅ or ❌ when processing completes."""
@@ -941,7 +967,9 @@ class WhatsAppAdapter(BasePlatformAdapter):
         if chat_id and message_id:
             from gateway.platforms.base import ProcessingOutcome
             success = outcome == ProcessingOutcome.SUCCESS if isinstance(outcome, ProcessingOutcome) else bool(outcome)
-            await self.send_reaction(chat_id, message_id, "\u2705" if success else "\u274c")
+            emoji = "\u2705" if success else "\u274c"
+            await self.send_reaction(chat_id, message_id, emoji)
+            self._wa_log(emoji, "Reacted")
 
     # --- JSONL message logging ---
 
@@ -1074,6 +1102,10 @@ class WhatsAppAdapter(BasePlatformAdapter):
                         for msg_data in messages:
                             # Log ALL messages to JSONL (before filtering)
                             self._log_message_jsonl(msg_data)
+                            # Log incoming message
+                            sender = msg_data.get("senderName", "?")
+                            body = self._truncate(msg_data.get("body", ""))
+                            self._wa_log("\U0001f4e5", f'{sender}: "{body}"')
                             event = await self._build_message_event(msg_data)
                             if event:
                                 await self.handle_message(event)
