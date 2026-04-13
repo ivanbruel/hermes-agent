@@ -932,13 +932,15 @@ class WhatsAppAdapter(BasePlatformAdapter):
         if chat_id and message_id:
             await self.send_reaction(chat_id, message_id, "\U0001f440")
 
-    async def on_processing_complete(self, event: MessageEvent, success: bool) -> None:
+    async def on_processing_complete(self, event: MessageEvent, outcome) -> None:
         """Replace 👀 with ✅ or ❌ when processing completes."""
         if not self._reactions_enabled():
             return
         chat_id = getattr(event.source, "chat_id", None)
         message_id = getattr(event, "message_id", None)
         if chat_id and message_id:
+            from gateway.platforms.base import ProcessingOutcome
+            success = outcome == ProcessingOutcome.SUCCESS if isinstance(outcome, ProcessingOutcome) else bool(outcome)
             await self.send_reaction(chat_id, message_id, "\u2705" if success else "\u274c")
 
     # --- JSONL message logging ---
