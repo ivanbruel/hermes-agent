@@ -452,8 +452,12 @@ async function startSocket() {
         timestamp: msg.messageTimestamp,
       };
 
-      // Cache original remoteJid for reactions (before normalization)
-      _originalJidCache[msg.key.id] = msg.key.remoteJid;
+      // Cache original message key for reactions (before normalization)
+      _originalJidCache[msg.key.id] = {
+        remoteJid: msg.key.remoteJid,
+        participant: msg.key.participant || null,
+        fromMe: !!msg.key.fromMe,
+      };
       if (Object.keys(_originalJidCache).length > _MAX_JID_CACHE) {
         delete _originalJidCache[Object.keys(_originalJidCache)[0]];
       }
@@ -673,25 +677,19 @@ app.post('/react', async (req, res) => {
   }
 
   try {
-    // Look up the original remoteJid from recent messages — the normalized
-    // chatId (phone format) may not match WhatsApp's internal LID format.
-    let remoteJid = chatId;
-    for (const q of Object.values(messageQueues)) {
-      for (const msg of q) {
-        if (msg.messageId === messageId) {
-          remoteJid = msg._originalRemoteJid || chatId;
-          break;
-        }
-      }
-    }
-    // Also check the lookup cache
-    if (_originalJidCache[messageId]) {
-      remoteJid = _originalJidCache[messageId];
+    // Build the reaction key from the cached original message key.
+    // Group reactions require participant (sender JID) in the key.
+    const cached = _originalJidCache[messageId];
+    const key = {
+      id: messageId,
+      remoteJid: cached?.remoteJid || chatId,
+      fromMe: cached?.fromMe || false,
+    };
+    if (cached?.participant) {
+      key.participant = cached.participant;
     }
 
-    await sock.sendMessage(remoteJid, {
-      react: { text: emoji || '', key: { id: messageId, remoteJid, fromMe: false } }
-    });
+    await sock.sendMessage(key.remoteJid, { react: { text: emoji || '', key } });
     res.json({ success: true });
   } catch (err) {
     res.status(500).json({ error: err.message });
