@@ -171,6 +171,11 @@ function normalizeChatId(chatId) {
 
 const logger = pino({ level: 'warn' });
 
+// Cache original remoteJid (pre-normalization) by messageId for reactions.
+// Reactions need the original JID format (LID) to target the right message.
+const _originalJidCache = {};
+const _MAX_JID_CACHE = 200;
+
 // Per-chat message queues for multi-profile polling.
 // When multiple Hermes profiles share a single bridge, each profile polls
 // only its assigned chats via ?chats=id1,id2.  Without the query param
@@ -447,6 +452,12 @@ async function startSocket() {
         timestamp: msg.messageTimestamp,
       };
 
+      // Cache original remoteJid for reactions (before normalization)
+      _originalJidCache[msg.key.id] = msg.key.remoteJid;
+      if (Object.keys(_originalJidCache).length > _MAX_JID_CACHE) {
+        delete _originalJidCache[Object.keys(_originalJidCache)[0]];
+      }
+
       if (!messageQueues[chatId]) messageQueues[chatId] = [];
       messageQueues[chatId].push(event);
       if (messageQueues[chatId].length > MAX_QUEUE_SIZE) {
@@ -662,8 +673,24 @@ app.post('/react', async (req, res) => {
   }
 
   try {
-    await sock.sendMessage(chatId, {
-      react: { text: emoji || '', key: { id: messageId, remoteJid: chatId } }
+    // Look up the original remoteJid from recent messages — the normalized
+    // chatId (phone format) may not match WhatsApp's internal LID format.
+    let remoteJid = chatId;
+    for (const q of Object.values(messageQueues)) {
+      for (const msg of q) {
+        if (msg.messageId === messageId) {
+          remoteJid = msg._originalRemoteJid || chatId;
+          break;
+        }
+      }
+    }
+    // Also check the lookup cache
+    if (_originalJidCache[messageId]) {
+      remoteJid = _originalJidCache[messageId];
+    }
+
+    await sock.sendMessage(remoteJid, {
+      react: { text: emoji || '', key: { id: messageId, remoteJid, fromMe: false } }
     });
     res.json({ success: true });
   } catch (err) {
